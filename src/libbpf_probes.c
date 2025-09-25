@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2019 Netronome Systems, Inc. */
 
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <net/if.h>
 #include <sys/utsname.h>
+#include <sys/auxv.h>
+#include <endian.h>
+#include <link.h>
+#include <stdio.h>
+#include <string.h>
 
 #include <linux/btf.h>
 #include <linux/filter.h>
@@ -50,6 +57,65 @@ static __u32 get_ubuntu_kernel_version(void)
 	return KERNEL_VERSION(major, minor, patch);
 }
 
+#ifndef ELF_CLASS
+# if __x86_64__ || __aarch64__
+#  define ELF_CLASS ELFCLASS64
+# else
+#  define ELF_CLASS ELFCLASS32
+# endif
+#endif
+
+#if ELF_CLASS == ELFCLASS64
+# define ElfW(type) Elf64_##type
+#else
+# define ElfW(type) Elf32_##type
+#endif
+
+static uint32_t find_version_note(unsigned long base) {
+    const ElfW(Ehdr) *ehdr = (const ElfW(Ehdr) *)base;
+    const char *base_ptr = (const char *)base;
+
+    for (ElfW(Half) i = 0; i < ehdr->e_shnum; i++) {
+        const ElfW(Shdr) *shdr =
+            (const ElfW(Shdr) *)(base_ptr + ehdr->e_shoff + i * ehdr->e_shentsize);
+
+        if (shdr->sh_type != SHT_NOTE)
+            continue;
+
+        const char *ptr = base_ptr + shdr->sh_offset;
+        const char *end = ptr + shdr->sh_size;
+
+        while (ptr < end) {
+            const ElfW(Nhdr) *nhdr = (const ElfW(Nhdr) *)ptr;
+            ptr += sizeof(*nhdr);
+
+            const char *name = ptr;
+            ptr += (nhdr->n_namesz + sizeof(ElfW(Word)) - 1) & -sizeof(ElfW(Word));
+
+            const char *desc = ptr;
+            ptr += (nhdr->n_descsz + sizeof(ElfW(Word)) - 1) & -sizeof(ElfW(Word));
+
+            if (nhdr->n_namesz >= 5 &&
+                !memcmp(name, "Linux", 5) &&
+                nhdr->n_descsz == 4 &&
+                nhdr->n_type == 0) {
+                return *(const uint32_t *)desc;
+            }
+        }
+    }
+    return 0;
+}
+
+static uint32_t kernel_version_from_vdso(void) {
+    unsigned long base = getauxval(AT_SYSINFO_EHDR);
+    if (base && !memcmp((void *)base, ELFMAG, SELFMAG)) {
+        uint32_t code = find_version_note(base);
+        if (code)
+            return code;
+    }
+    return 0;
+}
+
 /* On Debian LINUX_VERSION_CODE doesn't correspond to info.release.
  * Instead, it is provided in info.version. An example content of
  * Debian 10 looks like the below.
@@ -70,6 +136,10 @@ static __u32 get_debian_kernel_version(struct utsname *info)
 		/* This is not a Debian kernel. */
 		return 0;
 	}
+
+	__u32 from_vdso = kernel_version_from_vdso();
+	if (from_vdso)
+		return from_vdso;
 
 	if (sscanf(p, "Debian %u.%u.%u", &major, &minor, &patch) != 3)
 		return 0;
