@@ -7594,7 +7594,7 @@ retry_load:
 
 			for (i = 0; i < obj->nr_maps; i++) {
 				map = &prog->obj->maps[i];
-				if (map->libbpf_type != LIBBPF_MAP_RODATA)
+				if (map->libbpf_type != LIBBPF_MAP_RODATA || !map->autocreate)
 					continue;
 
 				if (bpf_prog_bind_map(ret, map->fd, NULL)) {
