@@ -2585,7 +2585,7 @@ static int linker_append_btf_ext(struct bpf_linker *linker, struct src_obj *obj)
 			if (str_off < 0)
 				return -ENOMEM;
 			dst_rec->line_off = str_off;
-			dst_rec->line_col = BPF_LINE_INFO_LINE_NUM(dst_rec->line_col) << 10;
+			dst_rec->line_col = 0; //BPF_LINE_INFO_LINE_NUM(dst_rec->line_col) << 10;
 		}
 	}
 
